@@ -205,7 +205,7 @@ func (c *Client) GetActorTemplate(ctx context.Context, atespace, templateName st
 
 const (
 	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
-	DefaultSnapshotsBucket = "gs://snapshot-substrate-test-ax-substrate/ate-env/"
+	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
 )
 
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
@@ -320,12 +320,7 @@ func (c *Client) EnsureActor(ctx context.Context, atespace, actorName, templateA
 	actor, err := c.control.CreateActor(ctx, req)
 	if err != nil {
 		if status.Code(err) == codes.AlreadyExists {
-			existing, getErr := c.control.GetActor(ctx, &ateapipb.GetActorRequest{
-				Actor: &ateapipb.ObjectRef{
-					Atespace: atespace,
-					Name:     actorName,
-				},
-			})
+			existing, getErr := c.GetActor(ctx, atespace, actorName)
 			if getErr == nil && existing != nil {
 				state := existing.GetStatus().GetState()
 				if state == ateapipb.ActorState_ACTOR_STATE_CRASHED {
@@ -341,14 +336,14 @@ func (c *Client) EnsureActor(ctx context.Context, atespace, actorName, templateA
 						return reverted.GetActor(), nil
 					}
 					slog.Warn("existing actor is crashed and could not be reverted, deleting and recreating", "actor", actorName, "error", revertErr)
-					_, _ = c.control.DeleteActor(ctx, &ateapipb.DeleteActorRequest{
-						Actor: &ateapipb.ObjectRef{
-							Atespace: atespace,
-							Name:     actorName,
-						},
-						AnyState: true,
-					})
-					state = ateapipb.ActorState_ACTOR_STATE_DELETING
+					if err := c.DeleteActor(ctx, atespace, actorName); err != nil {
+						return nil, err
+					}
+					actor, err = c.control.CreateActor(ctx, req)
+					if err == nil {
+						return actor, nil
+					}
+					return nil, fmt.Errorf("recreating actor %s/%s after crash: %w", atespace, actorName, err)
 				}
 				if state == ateapipb.ActorState_ACTOR_STATE_DELETING {
 					// Wait briefly for previous actor deletion to finalize before recreating
@@ -413,7 +408,22 @@ func (c *Client) SuspendActor(ctx context.Context, atespace, actorName string) e
 	return nil
 }
 
-// DeleteActor deletes the specified actor from Substrate.
+// GetActor fetches an Actor by name.
+func (c *Client) GetActor(ctx context.Context, atespace, actorName string) (*ateapipb.Actor, error) {
+	req := &ateapipb.GetActorRequest{
+		Actor: &ateapipb.ObjectRef{
+			Atespace: atespace,
+			Name:     actorName,
+		},
+	}
+	return c.control.GetActor(ctx, req)
+}
+
+// actorDeletionPollInterval is the interval between checks when waiting for an actor to be deleted.
+var actorDeletionPollInterval = 200 * time.Millisecond
+
+// DeleteActor deletes the specified actor from Substrate and blocks until the actor
+// is fully deleted.
 func (c *Client) DeleteActor(ctx context.Context, atespace, actorName string) error {
 	req := &ateapipb.DeleteActorRequest{
 		Actor: &ateapipb.ObjectRef{
@@ -423,10 +433,50 @@ func (c *Client) DeleteActor(ctx context.Context, atespace, actorName string) er
 		AnyState: true,
 	}
 	_, err := c.control.DeleteActor(ctx, req)
-	if err != nil && status.Code(err) != codes.NotFound {
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
 		return fmt.Errorf("deleting actor %s/%s: %w", atespace, actorName, err)
 	}
-	return nil
+
+	getReq := &ateapipb.GetActorRequest{
+		Actor: &ateapipb.ObjectRef{
+			Atespace: atespace,
+			Name:     actorName,
+		},
+	}
+
+	// Fast path: check if the actor was deleted synchronously.
+	_, err = c.control.GetActor(ctx, getReq)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("waiting for actor %s/%s deletion: %w", atespace, actorName, ctx.Err())
+		}
+	}
+
+	ticker := time.NewTicker(actorDeletionPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for actor %s/%s deletion: %w", atespace, actorName, ctx.Err())
+		case <-ticker.C:
+			_, err := c.control.GetActor(ctx, getReq)
+			if err != nil {
+				if status.Code(err) == codes.NotFound {
+					return nil
+				}
+				if ctx.Err() != nil {
+					return fmt.Errorf("waiting for actor %s/%s deletion: %w", atespace, actorName, ctx.Err())
+				}
+			}
+		}
+	}
 }
 
 // ListActorTemplates returns all ActorTemplates in the given atespace.
