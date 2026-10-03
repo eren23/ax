@@ -112,8 +112,8 @@ func (m *mockControlServer) ResumeActor(ctx context.Context, req *ateapipb.Resum
 			Status: &ateapipb.ActorStatus{
 				State: ateapipb.ActorState_ACTOR_STATE_RUNNING,
 				WorkerAssignment: &ateapipb.WorkerAssignment{
-					WorkerPod:   "worker-pod-1",
-					WorkerPodIp: wIP,
+					WorkerPod:    "worker-pod-1",
+					WorkerPodIps: []string{wIP},
 				},
 			},
 		},
@@ -129,7 +129,6 @@ func (m *mockControlServer) SuspendActor(ctx context.Context, req *ateapipb.Susp
 	m.suspendedActors = append(m.suspendedActors, name)
 	return &ateapipb.SuspendActorResponse{}, nil
 }
-
 
 func (m *mockControlServer) RevertActor(_ context.Context, req *ateapipb.RevertActorRequest) (*ateapipb.RevertActorResponse, error) {
 	name := req.GetActor().GetName()

@@ -245,7 +245,7 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Image:   image,
 			Command: command,
 			Env:     envList,
-			Readyz: &ateapipb.ContainerReadyz{
+			WakeupProbe: &ateapipb.ContainerWakeupProbe{
 				HttpGet: &ateapipb.HTTPGetAction{
 					Path: "/readyz",
 					Port: 80,
@@ -260,13 +260,10 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Name:       "workspace",
 			DurableDir: &ateapipb.DurableDirVolumeSource{},
 		}},
-		SnapshotsConfig: &ateapipb.SnapshotsConfig{
+		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation: snapshotsBucket,
 			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
-			OnResume: &ateapipb.OnResumeConfig{
-				FromData: ateapipb.ResumeSource_RESUME_SOURCE_GOLDEN,
-			},
 		},
 		SandboxConfig: &ateapipb.SandboxConfig{
 			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,
@@ -387,8 +384,8 @@ func (c *Client) ResumeActor(ctx context.Context, atespace, actorName string) (*
 		return nil, "", fmt.Errorf("nil actor returned when resuming %s/%s", atespace, actorName)
 	}
 	var workerIP string
-	if resp.Actor.Status != nil && resp.Actor.Status.WorkerAssignment != nil {
-		workerIP = resp.Actor.Status.WorkerAssignment.WorkerPodIp
+	if ips := resp.GetActor().GetStatus().GetWorkerAssignment().GetWorkerPodIps(); len(ips) > 0 {
+		workerIP = ips[0]
 	}
 	return resp.Actor, workerIP, nil
 }
@@ -505,5 +502,3 @@ func (c *Client) DeleteActorTemplate(ctx context.Context, atespace, templateName
 	}
 	return nil
 }
-
-
