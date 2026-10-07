@@ -45,6 +45,7 @@ type mockControlServer struct {
 	deletedTemplates []string
 	getActorFunc     func(ctx context.Context, req *ateapipb.GetActorRequest) (*ateapipb.Actor, error)
 	crashedActor     string
+	suspendErr       error
 	revertedActors   []string
 }
 
@@ -127,6 +128,9 @@ func (m *mockControlServer) SuspendActor(ctx context.Context, req *ateapipb.Susp
 		name = req.Actor.Name
 	}
 	m.suspendedActors = append(m.suspendedActors, name)
+	if m.suspendErr != nil {
+		return nil, m.suspendErr
+	}
 	return &ateapipb.SuspendActorResponse{}, nil
 }
 
@@ -621,5 +625,44 @@ func TestEnsureActor_RevertsCrashedActor(t *testing.T) {
 	}
 	if len(mockSrv.revertedActors) != 1 || len(mockSrv.deletedActors) != 0 {
 		t.Errorf("crashed actor: reverted %v, deleted %v; want reverted only", mockSrv.revertedActors, mockSrv.deletedActors)
+	}
+}
+
+// A failed suspend must not report Suspended (google/ax#453).
+func TestTaskReconciler_SuspendError(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer lis.Close()
+
+	mockSrv := &mockControlServer{suspendErr: status.Error(codes.Internal, "while uploading external snapshot")}
+	grpcServer := grpc.NewServer()
+	ateapipb.RegisterControlServer(grpcServer, mockSrv)
+	go grpcServer.Serve(lis)
+	defer grpcServer.Stop()
+
+	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to create substrate client: %v", err)
+	}
+	defer client.Close()
+
+	reconciler := controller.NewTaskReconciler(client, "test-template", "ax-system")
+	reconciler.SecretResolver = noSecrets
+	task := &v1alpha1.Task{
+		ApiVersion: v1alpha1.APIVersion,
+		Kind:       v1alpha1.KindTask,
+		Metadata:   &v1alpha1.ObjectMeta{Name: "suspend-fail", Atespace: "default"},
+		Spec:       &v1alpha1.TaskSpec{Image: "ghrc.io/my-org/my-image"},
+		Status:     &v1alpha1.TaskStatus{Phase: "Suspended"},
+	}
+
+	reconciled, err := reconciler.Reconcile(context.Background(), task, nil)
+	if err == nil {
+		t.Fatal("Reconcile succeeded, want the SuspendActor error")
+	}
+	if got := reconciled.GetStatus().GetPhase(); got != "Failed" {
+		t.Errorf("phase = %q, want Failed", got)
 	}
 }

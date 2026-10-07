@@ -307,6 +307,8 @@ func (s *Server) SuspendTask(ctx context.Context, req *v1alpha1.SuspendTaskReque
 		workspaces := s.fetchWorkspaces(ctx, atespace, task)
 		reconciled, err := s.reconciler.Reconcile(ctx, task, workspaces...)
 		if err != nil {
+			task.Status.Phase = "Failed"
+			_ = s.store.UpdateTaskStatus(ctx, atespace, taskName, task.Status)
 			return nil, status.Errorf(codes.Internal, "suspending task on substrate: %v", err)
 		}
 		task.Status = reconciled.Status

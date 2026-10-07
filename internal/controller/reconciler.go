@@ -194,7 +194,11 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	if task.Status.Phase == "Suspended" || task.Status.Phase == "" {
 		slog.Info("suspending actor on Substrate", "actor", actorName)
 		if err := r.client.SuspendActor(ctx, atespace, actorName); err != nil {
-			slog.Warn("could not suspend actor on Substrate", "error", err)
+			// Do not report Suspended: a failed suspend can crash the actor, and the
+			// next reconcile then reverts it to an older snapshot (#453).
+			r.setNotReady(task, "ActorSuspendFailed", err.Error(), now)
+			task.Status.Phase = "Failed"
+			return task, fmt.Errorf("suspending actor: %w", err)
 		}
 		task.Status.WorkerIp = ""
 		task.Status.Phase = "Suspended"
