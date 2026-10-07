@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -138,6 +139,14 @@ else
 end
 `)
 
+var renewScript = redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("pexpire", KEYS[1], ARGV[2])
+else
+    return 0
+end
+`)
+
 // ChannelKey returns the Pub/Sub channel used to notify waiters when a lock is released.
 func ChannelKey(kind, atespace, name string) string {
 	if atespace == "" {
@@ -174,9 +183,31 @@ func (r *RedisLocker) Lock(ctx context.Context, kind, atespace, name string) (fu
 	token := hex.EncodeToString(tokenBytes)
 
 	makeUnlock := func() func() {
+		// Renew the lease while the lock is held, so that an operation longer
+		// than the TTL keeps the lock.
+		stop := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(r.ttl / 3)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					renewCtx, cancel := context.WithTimeout(context.Background(), r.ttl/3)
+					held, err := renewScript.Run(renewCtx, r.client, []string{key}, token, r.ttl.Milliseconds()).Int()
+					cancel()
+					if err == nil && held == 0 {
+						slog.Warn("lost lock lease", "key", key)
+						return
+					}
+				}
+			}
+		}()
 		var once sync.Once
 		return func() {
 			once.Do(func() {
+				close(stop)
 				releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = releaseAndNotifyScript.Run(releaseCtx, r.client, []string{key, chanKey}, token).Err()
