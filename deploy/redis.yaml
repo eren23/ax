@@ -27,6 +27,9 @@ metadata:
     app.kubernetes.io/part-of: ax
 spec:
   replicas: 1
+  # The volume is ReadWriteOnce: stop the old pod before the new one starts.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: ax-redis
@@ -38,6 +41,8 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          # Redis holds all Task state and the task locks. Keep them across a pod restart (#442).
+          args: ["redis-server", "--appendonly", "yes", "--appendfsync", "always"]
           ports:
             - containerPort: 6379
               name: redis
@@ -48,6 +53,27 @@ spec:
             limits:
               cpu: 1000m
               memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ax-redis-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ax-redis-data
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: ax-redis
+    app.kubernetes.io/part-of: ax
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
 ---
 apiVersion: v1
 kind: Service
