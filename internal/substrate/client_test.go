@@ -32,9 +32,10 @@ import (
 func TestBuildActorTemplate_DataSnapshots(t *testing.T) {
 	tmpl := BuildActorTemplate("test-ns", "test-template", "test-image", nil, nil, "s3://test-bucket/snapshots")
 	sc := tmpl.GetSnapshotConfig()
-	if sc.GetOnPause() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA ||
+	// Substrate main removed on_pause (substrate#2309) and rejects it; a pause captures on_commit.
+	if sc.GetOnPause() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_UNSPECIFIED ||
 		sc.GetOnCommit() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA {
-		t.Fatal("pause and commit must capture durable data")
+		t.Fatal("commit must capture durable data, and on_pause must be unset")
 	}
 	if sc.GetStorageLocation() != "s3://test-bucket/snapshots" {
 		t.Fatalf("unexpected snapshot storage location: %q", sc.GetStorageLocation())

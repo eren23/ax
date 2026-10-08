@@ -262,7 +262,6 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 		}},
 		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation: snapshotsBucket,
-			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
 		},
 		SandboxConfig: &ateapipb.SandboxConfig{
