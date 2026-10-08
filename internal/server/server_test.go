@@ -503,3 +503,60 @@ func TestServer_DeleteTask_UpdateStatusError(t *testing.T) {
 		t.Errorf("expected ReconcileDelete not to be called if UpdateTaskStatus fails, got %d calls", rec.deleteCount)
 	}
 }
+
+type gatedReconciler struct {
+	fakeReconciler
+	started chan struct{}
+	release chan struct{}
+	ctxErr  error
+}
+
+func (g *gatedReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, workspaces ...*v1alpha1.Workspace) (*v1alpha1.Task, error) {
+	if task.GetStatus().GetPhase() == "Suspended" && g.started != nil {
+		close(g.started)
+		<-g.release
+		g.ctxErr = ctx.Err()
+	}
+	return g.fakeReconciler.Reconcile(ctx, task, workspaces...)
+}
+
+// A client that gives up must not cancel the Substrate call (google/ax#453).
+func TestServer_SuspendTask_ContinuesAfterClientCancel(t *testing.T) {
+	st := memory.NewStore()
+	rec := &gatedReconciler{}
+	srv := server.NewServer(st, server.Options{Reconciler: rec})
+	bg := context.Background()
+	if _, err := srv.CreateTask(bg, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "slow"},
+		Spec:     &v1alpha1.TaskSpec{Image: "alpine"},
+	}}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := srv.ResumeTask(bg, &v1alpha1.ResumeTaskRequest{Name: "slow"}); err != nil {
+		t.Fatalf("ResumeTask: %v", err)
+	}
+
+	rec.started, rec.release = make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithCancel(bg)
+	done := make(chan error, 1)
+	go func() {
+		_, err := srv.SuspendTask(ctx, &v1alpha1.SuspendTaskRequest{Name: "slow"})
+		done <- err
+	}()
+	<-rec.started
+	cancel()
+	close(rec.release)
+	if err := <-done; err != nil {
+		t.Fatalf("SuspendTask: %v", err)
+	}
+	if rec.ctxErr != nil {
+		t.Errorf("reconcile context was cancelled with the client: %v", rec.ctxErr)
+	}
+	task, err := st.GetTask(bg, "default", "slow")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got := task.GetStatus().GetPhase(); got != "Suspended" {
+		t.Errorf("phase = %q, want Suspended", got)
+	}
+}

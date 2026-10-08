@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/ax/internal/lock"
 	"github.com/google/ax/internal/store"
@@ -35,6 +36,10 @@ type Reconciler interface {
 	Reconcile(ctx context.Context, task *v1alpha1.Task, workspaces ...*v1alpha1.Workspace) (*v1alpha1.Task, error)
 	ReconcileDelete(ctx context.Context, atespace, taskName string) error
 }
+
+// taskOpTimeout bounds a task lifecycle operation after it holds the task lock.
+// It is not tied to the client deadline.
+const taskOpTimeout = 10 * time.Minute
 
 // Options configures the AX API Server.
 type Options struct {
@@ -160,6 +165,11 @@ func (s *Server) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequest
 	}
 	defer unlock()
 
+	// The Substrate call must not stop when the client gives up: a cancelled
+	// suspend can stop the snapshot upload after the sandbox is gone (#453).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), taskOpTimeout)
+	defer cancel()
+
 	_, err = s.store.GetTask(ctx, atespace, taskName)
 	if err == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "task %s/%s already exists and is immutable", atespace, taskName)
@@ -214,6 +224,11 @@ func (s *Server) DeleteTask(ctx context.Context, req *v1alpha1.DeleteTaskRequest
 		return nil, status.Errorf(codes.Aborted, "locking task %s/%s: %v", atespace, taskName, err)
 	}
 	defer unlock()
+
+	// The Substrate call must not stop when the client gives up: a cancelled
+	// suspend can stop the snapshot upload after the sandbox is gone (#453).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), taskOpTimeout)
+	defer cancel()
 
 	task, err := s.store.GetTask(ctx, atespace, taskName)
 	if err != nil {
@@ -271,6 +286,11 @@ func (s *Server) SuspendTask(ctx context.Context, req *v1alpha1.SuspendTaskReque
 	}
 	defer unlock()
 
+	// The Substrate call must not stop when the client gives up: a cancelled
+	// suspend can stop the snapshot upload after the sandbox is gone (#453).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), taskOpTimeout)
+	defer cancel()
+
 	task, err := s.store.GetTask(ctx, atespace, taskName)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -287,6 +307,8 @@ func (s *Server) SuspendTask(ctx context.Context, req *v1alpha1.SuspendTaskReque
 		workspaces := s.fetchWorkspaces(ctx, atespace, task)
 		reconciled, err := s.reconciler.Reconcile(ctx, task, workspaces...)
 		if err != nil {
+			task.Status.Phase = "Failed"
+			_ = s.store.UpdateTaskStatus(ctx, atespace, taskName, task.Status)
 			return nil, status.Errorf(codes.Internal, "suspending task on substrate: %v", err)
 		}
 		task.Status = reconciled.Status
@@ -318,6 +340,11 @@ func (s *Server) ResumeTask(ctx context.Context, req *v1alpha1.ResumeTaskRequest
 		return nil, status.Errorf(codes.Aborted, "locking task %s/%s: %v", atespace, taskName, err)
 	}
 	defer unlock()
+
+	// The Substrate call must not stop when the client gives up: a cancelled
+	// suspend can stop the snapshot upload after the sandbox is gone (#453).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), taskOpTimeout)
+	defer cancel()
 
 	task, err := s.store.GetTask(ctx, atespace, taskName)
 	if err != nil {

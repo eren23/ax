@@ -16,12 +16,15 @@ package lock_test
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/ax/internal/lock"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestMemoryLocker_SerializesSameResource(t *testing.T) {
@@ -92,5 +95,43 @@ func TestMemoryLocker_Timeout(t *testing.T) {
 	_, err = locker.Lock(timeoutCtx, "task", "default", "task-1")
 	if err == nil {
 		t.Fatalf("expected timeout error, got nil")
+	}
+}
+
+// The Redis lease must outlive its TTL while the holder runs. Set
+// AX_TEST_REDIS_ADDR (for example localhost:6379) to run it.
+func TestRedisLocker_RenewsLeaseWhileHeld(t *testing.T) {
+	addr := os.Getenv("AX_TEST_REDIS_ADDR")
+	if addr == "" {
+		t.Skip("AX_TEST_REDIS_ADDR not set")
+	}
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	defer client.Close()
+	locker := lock.NewRedisLocker(client, lock.RedisLockerOptions{TTL: 300 * time.Millisecond, FallbackInterval: 20 * time.Millisecond})
+	ctx := context.Background()
+	name := fmt.Sprintf("renew-%d", time.Now().UnixNano())
+
+	unlock, err := locker.Lock(ctx, "task", "default", name)
+	if err != nil {
+		t.Fatalf("Lock: %v", err)
+	}
+	time.Sleep(1 * time.Second) // more than three TTLs
+
+	waitCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if unlock2, err := locker.Lock(waitCtx, "task", "default", name); err == nil {
+		unlock2()
+		t.Fatal("a second holder got the lock after the TTL; the lease was not renewed")
+	}
+
+	unlock()
+	unlock2, err := locker.Lock(ctx, "task", "default", name)
+	if err != nil {
+		t.Fatalf("Lock after unlock: %v", err)
+	}
+	unlock2()
+	time.Sleep(500 * time.Millisecond) // the stopped renewal must not bring the key back
+	if n, _ := client.Exists(ctx, lock.Key("task", "default", name)).Result(); n != 0 {
+		t.Errorf("lock key still exists after unlock")
 	}
 }

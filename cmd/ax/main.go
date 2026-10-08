@@ -831,7 +831,8 @@ func runSuspend(serverURL, atespace string, args []string) error {
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// A large workspace snapshot can take minutes to upload or restore.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if _, err := client.SuspendTask(ctx, &v1alpha1.SuspendTaskRequest{Atespace: atespace, Name: name}); err != nil {
@@ -862,7 +863,8 @@ func runResume(serverURL, atespace string, args []string) error {
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// A large workspace snapshot can take minutes to upload or restore.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if _, err := client.ResumeTask(ctx, &v1alpha1.ResumeTaskRequest{Atespace: atespace, Name: name}); err != nil {
