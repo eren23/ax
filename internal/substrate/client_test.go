@@ -32,10 +32,9 @@ import (
 func TestBuildActorTemplate_DataSnapshots(t *testing.T) {
 	tmpl := BuildActorTemplate("test-ns", "test-template", "test-image", nil, nil, "s3://test-bucket/snapshots")
 	sc := tmpl.GetSnapshotConfig()
-	// Substrate main removed on_pause (substrate#2309) and rejects it; a pause captures on_commit.
-	if sc.GetOnPause() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_UNSPECIFIED ||
-		sc.GetOnCommit() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA {
-		t.Fatal("commit must capture durable data, and on_pause must be unset")
+	// VOLUMES is the old DATA scope (substrate#2364): snapshots hold the durable workspace only.
+	if sc.GetPreferredFidelity() != ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES {
+		t.Fatalf("preferred fidelity = %v, want VOLUMES", sc.GetPreferredFidelity())
 	}
 	if sc.GetStorageLocation() != "s3://test-bucket/snapshots" {
 		t.Fatalf("unexpected snapshot storage location: %q", sc.GetStorageLocation())

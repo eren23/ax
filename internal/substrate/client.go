@@ -261,8 +261,8 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			DurableDir: &ateapipb.DurableDirVolumeSource{},
 		}},
 		SnapshotConfig: &ateapipb.SnapshotConfig{
-			StorageLocation: snapshotsBucket,
-			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA,
+			StorageLocation:   snapshotsBucket,
+			PreferredFidelity: ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES,
 		},
 		SandboxConfig: &ateapipb.SandboxConfig{
 			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,

@@ -2,6 +2,8 @@ github.com/agent-substrate/env v0.0.11-0.20260912052224-4468a200b170 h1:8AxhEx3B
 github.com/agent-substrate/env v0.0.11-0.20260912052224-4468a200b170/go.mod h1:RZ4ACmDqWQx7fgX9b1EaFJskeYTZh1Y7uZinDtp7U2o=
 github.com/agent-substrate/substrate v0.3.1-0.20261002050842-6a35150e294b h1:TxFwrprB6y9v1HUvzt77u8V9bfwdYb8c3Nf7tDiWtEI=
 github.com/agent-substrate/substrate v0.3.1-0.20261002050842-6a35150e294b/go.mod h1:IuJNQ+2si6Sxkg9b3+kfhaXQiaxSwHtsiQrpNFWbjZY=
+github.com/agent-substrate/substrate v0.4.1-0.20261009030217-288694ef2297 h1:chyWQ9vpj/G9aaZ2AalV7guVC8ce5f2nJDhYEofYt0w=
+github.com/agent-substrate/substrate v0.4.1-0.20261009030217-288694ef2297/go.mod h1:IuJNQ+2si6Sxkg9b3+kfhaXQiaxSwHtsiQrpNFWbjZY=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
