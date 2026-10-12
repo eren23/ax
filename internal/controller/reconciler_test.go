@@ -436,6 +436,88 @@ func TestTaskReconciler_WorkspaceReady(t *testing.T) {
 	}
 }
 
+// TestTaskReconciler_WorkspaceReadyViaRouter checks that a router answer does not wait for
+// the direct check. In Substrate a direct connection to the worker hangs until it times out.
+func TestTaskReconciler_WorkspaceReadyViaRouter(t *testing.T) {
+	ctx := context.Background()
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer lis.Close()
+
+	// The worker accepts connections but never answers.
+	hangLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen hang: %v", err)
+	}
+	defer hangLis.Close()
+	go func() {
+		for {
+			c, err := hangLis.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+
+	routerLis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen router: %v", err)
+	}
+	defer routerLis.Close()
+	targets := make(chan string, 16)
+	routerServer := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case targets <- r.Header.Get("ate-target-actor"):
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	})}
+	go routerServer.Serve(routerLis)
+	defer routerServer.Close()
+	t.Setenv("ATENET_ROUTER_ADDR", routerLis.Addr().String())
+
+	mockSrv := &mockControlServer{workerIP: hangLis.Addr().String()}
+	grpcServer := grpc.NewServer()
+	ateapipb.RegisterControlServer(grpcServer, mockSrv)
+	go grpcServer.Serve(lis)
+	defer grpcServer.Stop()
+
+	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to create substrate client: %v", err)
+	}
+	defer client.Close()
+
+	reconciler := controller.NewTaskReconciler(client, "test-template", "ax-system")
+	reconciler.SecretResolver = noSecrets
+	reconciler.WorkspaceReadyTimeout = time.Second
+
+	task := &v1alpha1.Task{
+		ApiVersion: v1alpha1.APIVersion,
+		Kind:       v1alpha1.KindTask,
+		Metadata:   &v1alpha1.ObjectMeta{Name: "router-task", Atespace: "default"},
+		Spec:       &v1alpha1.TaskSpec{},
+		Status:     &v1alpha1.TaskStatus{Phase: "Running"},
+	}
+	reconciled, err := reconciler.Reconcile(ctx, task, nil)
+	if err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+	assertCondition(t, reconciled, "WorkspaceReady", "True", "SetupComplete")
+	select {
+	case got := <-targets:
+		if !strings.HasPrefix(got, "default/") {
+			t.Errorf("router request had ate-target-actor %q, want default/<actor>", got)
+		}
+	default:
+		t.Error("the reconciler did not ask the router")
+	}
+}
+
 // assertCondition fails the test unless the task has a condition of the given type with
 // the expected status and reason.
 func assertCondition(t *testing.T, task *v1alpha1.Task, condType, wantStatus, wantReason string) {

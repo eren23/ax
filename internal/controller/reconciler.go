@@ -239,26 +239,27 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		defer ticker.Stop()
 
 		checkReady := func() bool {
-			// 1. Direct readyz check
-			req, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, readyURL, nil)
-			if resp, err := r.httpClient.Do(req); err == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					return true
-				}
-			}
-
-			// 2. Router-based readyz check (in-cluster via atenet-router)
+			// 1. Router-based readyz check (in-cluster via atenet-router). Substrate
+			// does not admit direct traffic to the worker pod, so the direct check
+			// below hangs until the client timeout. When the router answers, its
+			// answer is final.
 			if routerAddr := os.Getenv("ATENET_ROUTER_ADDR"); routerAddr != "" {
 				rReq, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, fmt.Sprintf("http://%s/readyz?check=workspace", routerAddr), nil)
 				if rReq != nil {
 					rReq.Header.Set("ate-target-actor", fmt.Sprintf("%s/%s", atespace, actorName))
 					if resp, err := r.httpClient.Do(rReq); err == nil {
 						_ = resp.Body.Close()
-						if resp.StatusCode == http.StatusOK {
-							return true
-						}
+						return resp.StatusCode == http.StatusOK
 					}
+				}
+			}
+
+			// 2. Direct readyz check
+			req, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, readyURL, nil)
+			if resp, err := r.httpClient.Do(req); err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return true
 				}
 			}
 			return false
