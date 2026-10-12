@@ -436,85 +436,107 @@ func TestTaskReconciler_WorkspaceReady(t *testing.T) {
 	}
 }
 
-// TestTaskReconciler_WorkspaceReadyViaRouter checks that a router answer does not wait for
-// the direct check. In Substrate a direct connection to the worker hangs until it times out.
+// TestTaskReconciler_WorkspaceReadyViaRouter checks the router readiness check. A router 200
+// must not wait for the direct check, which hangs in Substrate until it times out. A router
+// error must still fall back to the direct check.
 func TestTaskReconciler_WorkspaceReadyViaRouter(t *testing.T) {
-	ctx := context.Background()
+	for _, tc := range []struct {
+		name         string
+		routerStatus int
+		workerReady  bool // the worker answers 200; otherwise it accepts connections and never answers
+	}{
+		{name: "router ready, worker hangs", routerStatus: http.StatusOK},
+		{name: "router fails, worker ready", routerStatus: http.StatusBadGateway, workerReady: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
-	defer lis.Close()
-
-	// The worker accepts connections but never answers.
-	hangLis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen hang: %v", err)
-	}
-	defer hangLis.Close()
-	go func() {
-		for {
-			c, err := hangLis.Accept()
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
-				return
+				t.Fatalf("failed to listen: %v", err)
 			}
-			defer c.Close()
-		}
-	}()
+			defer lis.Close()
 
-	routerLis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen router: %v", err)
-	}
-	defer routerLis.Close()
-	targets := make(chan string, 16)
-	routerServer := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case targets <- r.Header.Get("ate-target-actor"):
-		default:
-		}
-		w.WriteHeader(http.StatusOK)
-	})}
-	go routerServer.Serve(routerLis)
-	defer routerServer.Close()
-	t.Setenv("ATENET_ROUTER_ADDR", routerLis.Addr().String())
+			workerLis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("failed to listen worker: %v", err)
+			}
+			defer workerLis.Close()
+			if tc.workerReady {
+				workerServer := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				})}
+				go workerServer.Serve(workerLis)
+				defer workerServer.Close()
+			} else {
+				go func() {
+					for {
+						c, err := workerLis.Accept()
+						if err != nil {
+							return
+						}
+						defer c.Close()
+					}
+				}()
+			}
 
-	mockSrv := &mockControlServer{workerIP: hangLis.Addr().String()}
-	grpcServer := grpc.NewServer()
-	ateapipb.RegisterControlServer(grpcServer, mockSrv)
-	go grpcServer.Serve(lis)
-	defer grpcServer.Stop()
+			routerLis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("failed to listen router: %v", err)
+			}
+			defer routerLis.Close()
+			routed := make(chan struct{}, 16)
+			routerServer := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/readyz" || r.URL.Query().Get("check") != "workspace" ||
+					r.Header.Get("ate-target-actor") != "default/router-task" {
+					t.Errorf("unexpected router request %s %s ate-target-actor=%q", r.Method, r.URL, r.Header.Get("ate-target-actor"))
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				select {
+				case routed <- struct{}{}:
+				default:
+				}
+				w.WriteHeader(tc.routerStatus)
+			})}
+			go routerServer.Serve(routerLis)
+			defer routerServer.Close()
+			t.Setenv("ATENET_ROUTER_ADDR", routerLis.Addr().String())
 
-	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("failed to create substrate client: %v", err)
-	}
-	defer client.Close()
+			mockSrv := &mockControlServer{workerIP: workerLis.Addr().String()}
+			grpcServer := grpc.NewServer()
+			ateapipb.RegisterControlServer(grpcServer, mockSrv)
+			go grpcServer.Serve(lis)
+			defer grpcServer.Stop()
 
-	reconciler := controller.NewTaskReconciler(client, "test-template", "ax-system")
-	reconciler.SecretResolver = noSecrets
-	reconciler.WorkspaceReadyTimeout = time.Second
+			client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatalf("failed to create substrate client: %v", err)
+			}
+			defer client.Close()
 
-	task := &v1alpha1.Task{
-		ApiVersion: v1alpha1.APIVersion,
-		Kind:       v1alpha1.KindTask,
-		Metadata:   &v1alpha1.ObjectMeta{Name: "router-task", Atespace: "default"},
-		Spec:       &v1alpha1.TaskSpec{},
-		Status:     &v1alpha1.TaskStatus{Phase: "Running"},
-	}
-	reconciled, err := reconciler.Reconcile(ctx, task, nil)
-	if err != nil {
-		t.Fatalf("Reconcile failed: %v", err)
-	}
-	assertCondition(t, reconciled, "WorkspaceReady", "True", "SetupComplete")
-	select {
-	case got := <-targets:
-		if !strings.HasPrefix(got, "default/") {
-			t.Errorf("router request had ate-target-actor %q, want default/<actor>", got)
-		}
-	default:
-		t.Error("the reconciler did not ask the router")
+			reconciler := controller.NewTaskReconciler(client, "test-template", "ax-system")
+			reconciler.SecretResolver = noSecrets
+			reconciler.WorkspaceReadyTimeout = time.Second
+
+			task := &v1alpha1.Task{
+				ApiVersion: v1alpha1.APIVersion,
+				Kind:       v1alpha1.KindTask,
+				Metadata:   &v1alpha1.ObjectMeta{Name: "router-task", Atespace: "default"},
+				Spec:       &v1alpha1.TaskSpec{},
+				Status:     &v1alpha1.TaskStatus{Phase: "Running"},
+			}
+			reconciled, err := reconciler.Reconcile(ctx, task, nil)
+			if err != nil {
+				t.Fatalf("Reconcile failed: %v", err)
+			}
+			assertCondition(t, reconciled, "WorkspaceReady", "True", "SetupComplete")
+			select {
+			case <-routed:
+			default:
+				t.Error("the reconciler did not ask the router")
+			}
+		})
 	}
 }
 

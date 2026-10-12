@@ -239,17 +239,18 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		defer ticker.Stop()
 
 		checkReady := func() bool {
-			// 1. Router-based readyz check (in-cluster via atenet-router). Substrate
-			// does not admit direct traffic to the worker pod, so the direct check
-			// below hangs until the client timeout. When the router answers, its
-			// answer is final.
+			// 1. Router-based readyz check (in-cluster via atenet-router). It goes
+			// first because Substrate's worker pool NetworkPolicy admits only the
+			// router, so the direct check below hangs until the client timeout.
 			if routerAddr := os.Getenv("ATENET_ROUTER_ADDR"); routerAddr != "" {
 				rReq, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, fmt.Sprintf("http://%s/readyz?check=workspace", routerAddr), nil)
 				if rReq != nil {
 					rReq.Header.Set("ate-target-actor", fmt.Sprintf("%s/%s", atespace, actorName))
 					if resp, err := r.httpClient.Do(rReq); err == nil {
 						_ = resp.Body.Close()
-						return resp.StatusCode == http.StatusOK
+						if resp.StatusCode == http.StatusOK {
+							return true
+						}
 					}
 				}
 			}
