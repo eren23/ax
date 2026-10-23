@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/google/ax/internal/guest"
+	"github.com/google/ax/internal/routerclient"
 	"github.com/google/ax/internal/tunnel"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	"google.golang.org/grpc"
@@ -1115,37 +1116,48 @@ func runSSH(serverURL, atespace, kubeContext string, args []string) error {
 	}
 
 	targetActor := fmt.Sprintf("%s/%s", task.Metadata.Atespace, task.Status.Actor)
+	routerConfig := routerclient.FromEnv()
+	if _, err := routerConfig.URL(); err != nil {
+		return fmt.Errorf("router address: %w", err)
+	}
+	if _, err := routerConfig.GRPCCredentials(); err != nil {
+		return fmt.Errorf("router credentials: %w", err)
+	}
 	var (
 		guestClient *guest.Client
-		cleanup     func()
 	)
 
 	// 1. First, check if worker IP is directly reachable (e.g. within cluster or local mesh)
 	d := net.Dialer{Timeout: 500 * time.Millisecond}
 	guestEndpoint := net.JoinHostPort(host, fmt.Sprint(port))
-	if testConn, dialErr := d.Dial("tcp", guestEndpoint); dialErr == nil {
+	var testConn net.Conn
+	if !routerConfig.TLS() {
+		testConn, _ = d.Dial("tcp", guestEndpoint)
+	}
+	if testConn != nil {
 		_ = testConn.Close()
 		guestClient, err = guest.Dial(guestEndpoint)
 		if err != nil {
 			return fmt.Errorf("connecting to guest at %s: %w", guestEndpoint, err)
 		}
 	} else {
-		// 2. Connect via the Substrate atenet-router service in ate-system (port 80)
-		localPort, pfCleanup, err := tunnel.PortForward(context.Background(), kubeContext, "ate-system", "svc/atenet-router", 80)
+		// Connect through the router using the explicitly configured transport.
+		remotePort := 80
+		if routerConfig.TLS() {
+			remotePort = 443
+		}
+		localPort, pfCleanup, err := tunnel.PortForward(context.Background(), kubeContext, "ate-system", "svc/atenet-router", remotePort)
 		if err != nil {
 			return fmt.Errorf("establishing port-forward to atenet-router: %w", err)
 		}
-		cleanup = pfCleanup
+		defer pfCleanup()
 		routerEndpoint := fmt.Sprintf("127.0.0.1:%d", localPort)
-		guestClient, err = guest.DialTarget(routerEndpoint, targetActor)
+		guestClient, err = guest.DialTarget(routerEndpoint, targetActor, routerConfig)
 		if err != nil {
 			return fmt.Errorf("connecting to guest via atenet-router at %s: %w", routerEndpoint, err)
 		}
 	}
 
-	if cleanup != nil {
-		defer cleanup()
-	}
 	defer guestClient.Close()
 
 	// A bare shell on a terminal runs with -i, so it prompts and Ctrl-C stops the

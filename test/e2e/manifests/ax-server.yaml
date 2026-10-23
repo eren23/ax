@@ -45,6 +45,10 @@ spec:
         app.kubernetes.io/name: ax-server
     spec:
       serviceAccountName: ax-server
+      securityContext:
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
       containers:
         - name: ax-server
           image: ${AX_SERVER_IMAGE}
@@ -60,7 +64,11 @@ spec:
             - "--template-atespace=${AX_SYSTEM_NAMESPACE}"
           env:
             - name: ATENET_ROUTER_ADDR
-              value: "atenet-router.ate-system.svc.cluster.local:80"
+              value: "https://atenet-router.ate-system.svc.cluster.local:443"
+            - name: ATENET_ROUTER_CA_FILE
+              value: "/run/servicedns-ca/trust-bundle.pem"
+            - name: ATENET_ROUTER_CLIENT_CERT
+              value: "/run/router-identity/credential-bundle.pem"
             - name: AX_SNAPSHOTS_BUCKET
               value: "${AX_SNAPSHOTS_BUCKET}"
             - name: AX_DEFAULT_TASK_IMAGE
@@ -94,7 +102,18 @@ spec:
             - mountPath: /run/servicedns-ca
               name: servicedns-ca
               readOnly: true
+            - mountPath: /run/router-identity
+              name: router-identity
+              readOnly: true
       volumes:
+        - name: router-identity
+          projected:
+            defaultMode: 384
+            sources:
+              - podCertificate:
+                  signerName: podidentity.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
         - name: ate-token
           projected:
             defaultMode: 420

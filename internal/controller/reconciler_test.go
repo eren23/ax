@@ -19,6 +19,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,40 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestRouterReadinessUsesConfiguredTLSClient(t *testing.T) {
+	router := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("ate-target-actor") != "default/router-task" {
+			t.Errorf("target=%q", r.Header.Get("ate-target-actor"))
+		}
+		if r.URL.Path != "/readyz" || r.URL.Query().Get("check") != "workspace" {
+			t.Errorf("unexpected URL %s", r.URL)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer router.Close()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := grpc.NewServer()
+	ateapipb.RegisterControlServer(srv, &mockControlServer{workerIP: "127.0.0.1:1"})
+	go srv.Serve(lis)
+	defer srv.Stop()
+	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	r := controller.NewTaskReconciler(client, "test-template", "default", "", controller.WithRouter(router.URL, router.Client()))
+	r.SecretResolver = noSecrets
+	r.WorkspaceReadyTimeout = time.Second
+	task, err := r.Reconcile(context.Background(), &v1alpha1.Task{Metadata: &v1alpha1.ObjectMeta{Name: "router-task", Atespace: "default"}, Spec: &v1alpha1.TaskSpec{Image: "test/image"}, Status: &v1alpha1.TaskStatus{Phase: "Running"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCondition(t, task, "WorkspaceReady", "True", "SetupComplete")
+}
 
 type mockControlServer struct {
 	ateapipb.UnimplementedControlServer
@@ -85,6 +120,10 @@ func (m *mockControlServer) CreateActorTemplate(_ context.Context, req *ateapipb
 		m.templateImages = append(m.templateImages, c.GetImage())
 	}
 	return tmpl, nil
+}
+
+func (m *mockControlServer) GetAtespace(context.Context, *ateapipb.GetAtespaceRequest) (*ateapipb.Atespace, error) {
+	return nil, status.Error(codes.NotFound, "atespace not found")
 }
 
 func (m *mockControlServer) CreateAtespace(ctx context.Context, req *ateapipb.CreateAtespaceRequest) (*ateapipb.Atespace, error) {

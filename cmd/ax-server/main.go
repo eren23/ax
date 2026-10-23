@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/ax/internal/controller"
 	"github.com/google/ax/internal/lock"
+	"github.com/google/ax/internal/routerclient"
 	"github.com/google/ax/internal/server"
 	"github.com/google/ax/internal/store/redis"
 	"github.com/google/ax/internal/substrate"
@@ -78,6 +79,18 @@ func main() {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+	routerConfig := routerclient.FromEnv()
+	routerURL, err := routerConfig.URL()
+	if err != nil {
+		slog.Error("invalid router address", "error", err)
+		os.Exit(1)
+	}
+	routerHTTP, err := routerConfig.HTTPClient()
+	if err != nil {
+		slog.Error("invalid router credentials", "error", err)
+		os.Exit(1)
+	}
+	defer routerHTTP.CloseIdleConnections()
 
 	slog.Info("starting ax-server",
 		"listenAddr", listenAddr,
@@ -109,7 +122,7 @@ func main() {
 		slog.Warn("could not initialize substrate client; running without substrate reconciliation", "error", err)
 	} else {
 		defer subClient.Close()
-		reconciler = controller.NewTaskReconciler(subClient, defaultTemplate, defaultTemplateAtespace, defaultTaskImage)
+		reconciler = controller.NewTaskReconciler(subClient, defaultTemplate, defaultTemplateAtespace, defaultTaskImage, controller.WithRouter(routerURL, routerHTTP))
 	}
 
 	srv := server.NewServer(rStore, server.Options{

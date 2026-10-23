@@ -25,8 +25,8 @@ import (
 	"time"
 
 	ateenvv1alpha "github.com/agent-substrate/env/proto/ateenv/v1alpha"
+	"github.com/google/ax/internal/routerclient"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -39,16 +39,26 @@ type Client struct {
 
 // Dial connects to the guest daemon at the specified target (e.g., "127.0.0.1:80").
 func Dial(target string) (*Client, error) {
-	return DialTarget(target, "")
+	return DialTarget(target, "", routerclient.Config{})
 }
 
 // DialTarget connects to the guest daemon at the specified target, optionally injecting
 // the 'ate-target-actor' metadata header on all calls (required when routing via atenet-router).
-func DialTarget(target string, targetActor string) (*Client, error) {
+func DialTarget(target string, targetActor string, config routerclient.Config) (*Client, error) {
+	if strings.HasPrefix(target, "https://") && !config.TLS() {
+		return nil, fmt.Errorf("HTTPS guest target requires router TLS credentials")
+	}
+	if strings.HasPrefix(target, "http://") && config.TLS() {
+		return nil, fmt.Errorf("TLS credentials cannot be used with an HTTP guest target")
+	}
 	target = strings.TrimPrefix(target, "http://")
 	target = strings.TrimPrefix(target, "https://")
 
-	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	transport, err := config.GRPCCredentials()
+	if err != nil {
+		return nil, err
+	}
+	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(transport)}
 	if targetActor != "" {
 		dialOpts = append(dialOpts,
 			grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {

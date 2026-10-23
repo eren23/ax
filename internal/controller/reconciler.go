@@ -61,6 +61,8 @@ type SecretResolver func(ctx context.Context, namespace, secretName, key string)
 type TaskReconciler struct {
 	client                  *substrate.Client
 	httpClient              *http.Client
+	routerURL               string
+	routerClient            *http.Client
 	defaultTemplate         string
 	defaultTemplateAtespace string
 	// defaultTaskImage is applied to spec.image for tasks that leave it empty.
@@ -75,10 +77,18 @@ type TaskReconciler struct {
 	WorkspaceReadyTimeout time.Duration
 }
 
+// Option configures a TaskReconciler.
+type Option func(*TaskReconciler)
+
+// WithRouter configures the router fallback for workspace readiness checks.
+func WithRouter(address string, client *http.Client) Option {
+	return func(r *TaskReconciler) { r.routerURL = address; r.routerClient = client }
+}
+
 // NewTaskReconciler creates a new TaskReconciler. Empty defaults fall back to
 // "default-template", v1alpha1.DefaultSystemNamespace and
 // v1alpha1.DefaultTaskImage respectively.
-func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplateAtespace, defaultTaskImage string) *TaskReconciler {
+func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplateAtespace, defaultTaskImage string, options ...Option) *TaskReconciler {
 	if defaultTemplate == "" {
 		defaultTemplate = "default-template"
 	}
@@ -88,7 +98,7 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 	if defaultTaskImage == "" {
 		defaultTaskImage = v1alpha1.DefaultTaskImage
 	}
-	return &TaskReconciler{
+	r := &TaskReconciler{
 		client:                  client,
 		httpClient:              &http.Client{Timeout: 2 * time.Second},
 		defaultTemplate:         defaultTemplate,
@@ -97,6 +107,10 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 		SecretResolver:          model.GetKubernetesSecret,
 		WorkspaceReadyTimeout:   defaultWorkspaceReadyTimeout,
 	}
+	for _, option := range options {
+		option(r)
+	}
+	return r
 }
 
 // Reconcile handles the reconciliation loop for a single Task.
@@ -293,11 +307,11 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, ws 
 			}
 
 			// 2. Router-based readyz check (in-cluster via atenet-router)
-			if routerAddr := os.Getenv("ATENET_ROUTER_ADDR"); routerAddr != "" {
-				rReq, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, fmt.Sprintf("http://%s/readyz?check=workspace", routerAddr), nil)
+			if r.routerURL != "" {
+				rReq, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, r.routerURL+"/readyz?check=workspace", nil)
 				if rReq != nil {
 					rReq.Header.Set("ate-target-actor", fmt.Sprintf("%s/%s", atespace, actorName))
-					if resp, err := r.httpClient.Do(rReq); err == nil {
+					if resp, err := r.routerClient.Do(rReq); err == nil {
 						_ = resp.Body.Close()
 						if resp.StatusCode == http.StatusOK {
 							return true
