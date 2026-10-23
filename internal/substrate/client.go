@@ -182,6 +182,18 @@ func (c *Client) Close() error {
 
 // EnsureAtespace creates the atespace if it does not already exist.
 func (c *Client) EnsureAtespace(ctx context.Context, atespace string) error {
+	// Reading an existing scope only needs atespace access. CreateAtespace
+	// requires a global owner even when the scope already exists.
+	err := retryOnCodes(ctx, func() error {
+		_, err := c.control.GetAtespace(ctx, &ateapipb.GetAtespaceRequest{Atespace: &ateapipb.ObjectRef{Name: atespace}})
+		return err
+	}, codes.Unavailable)
+	if err == nil {
+		return nil
+	}
+	if status.Code(err) != codes.NotFound {
+		return fmt.Errorf("getting atespace %q: %w", atespace, err)
+	}
 	req := &ateapipb.CreateAtespaceRequest{
 		Atespace: &ateapipb.Atespace{
 			Metadata: &ateapipb.ResourceMetadata{
@@ -189,7 +201,7 @@ func (c *Client) EnsureAtespace(ctx context.Context, atespace string) error {
 			},
 		},
 	}
-	err := retryOnCodes(ctx, func() error {
+	err = retryOnCodes(ctx, func() error {
 		_, err := c.control.CreateAtespace(ctx, req)
 		return err
 	}, codes.Unavailable)

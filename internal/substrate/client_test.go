@@ -45,6 +45,41 @@ type mockControlClient struct {
 	templates           map[string]*ateapipb.ActorTemplate
 	createTemplateErrs  []error
 	createdTemplates    []*ateapipb.ActorTemplate
+	atespaceGetErr      error
+	atespaceCreateErr   error
+	atespaceCreates     int
+}
+
+func (m *mockControlClient) GetAtespace(_ context.Context, req *ateapipb.GetAtespaceRequest, _ ...grpc.CallOption) (*ateapipb.Atespace, error) {
+	return &ateapipb.Atespace{Metadata: &ateapipb.ResourceMetadata{Name: req.GetAtespace().GetName()}}, m.atespaceGetErr
+}
+
+func (m *mockControlClient) CreateAtespace(_ context.Context, req *ateapipb.CreateAtespaceRequest, _ ...grpc.CallOption) (*ateapipb.Atespace, error) {
+	m.atespaceCreates++
+	return req.GetAtespace(), m.atespaceCreateErr
+}
+
+func TestEnsureAtespaceReusesAuthorizedExistingScope(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		get, create error
+		wantCode    codes.Code
+		wantCreates int
+	}{
+		{name: "existing editor", create: status.Error(codes.PermissionDenied, "global owner required")},
+		{name: "missing scope", get: status.Error(codes.NotFound, "missing"), wantCreates: 1},
+		{name: "read denied", get: status.Error(codes.PermissionDenied, "no access"), wantCode: codes.PermissionDenied},
+		{name: "concurrent create", get: status.Error(codes.NotFound, "missing"), create: status.Error(codes.AlreadyExists, "created concurrently"), wantCreates: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockControlClient{atespaceGetErr: tc.get, atespaceCreateErr: tc.create}
+			client := &Client{control: mock}
+			err := client.EnsureAtespace(context.Background(), "existing")
+			if status.Code(err) != tc.wantCode || mock.atespaceCreates != tc.wantCreates {
+				t.Fatalf("EnsureAtespace: error=%v creates=%d, want code=%v creates=%d", err, mock.atespaceCreates, tc.wantCode, tc.wantCreates)
+			}
+		})
+	}
 }
 
 func (m *mockControlClient) GetActorTemplate(ctx context.Context, req *ateapipb.GetActorTemplateRequest, opts ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
